@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.log
+~$*
+diagnostico_detalhe.html
+diagnostico_saida.txt
+resultado_aprovacoes_mpd.xlsx
