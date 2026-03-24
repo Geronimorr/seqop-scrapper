@@ -1,0 +1,66 @@
+# Anexo D - Árvore de decisão de perda.pptx
+
+## Slide 1
+- Perfurar com sistema MPD com fluido xx ppg e AP yy ppg.
+- S
+- Prosseguir perfuração em MPD.
+- Há autonomia de fluido? 3
+- N
+- Efetivo ou parcialmente efetivo?
+- S
+- S
+- N
+- Perda > 300 bbl/h
+- N
+- Efetuar teste de injetividade com fluido de perfuração 6, 7
+- Perda < 300 bbl/h
+- Há autonomia de fluido para expor mais formação para prosseguir?
+- N
+- Prosseguir perfuração em MPD.
+- S
+- Perda < 200 bbl/h?
+- S
+- N
+- S
+- S
+- ÁRVORE DE DECISÂO DE COMBATE À PERDA
+- Expor mais formação
+- Abrir PBL
+- e combater com tampão de filtrado relaxado ou gel reticulado ou equivalente
+- N
+- Perda > 300 bbl/h?
+- S
+- Tampão de Cimento
+- N
+- Deverá ser observada a pressão de poros obtida no DPPT ou por pré-teste. Caso esse valor não seja conhecido, considerar utilizar o método de DPPT com perdas, conforme padrão DPPT e de acordo com a perda observada.
+- Em cenários com grande incerteza na pressão de poros, ao persistirem as perdas após choke totalmente aberto, poderá ser necessário substituir o fluido por outro hidrostaticamente underbalance, permitindo trabalhar com a técnica SBP.
+- Observar que altas perdas poderão afetar o cálculo do modelo hidráulico.
+- Esta operação não é um combate a perda. Ela tem o objetivo de verificar a injetividade de sólidos na formação para avaliar a possibilidade da perfuração evoluir para MCD.
+- Q min inj em PMCD é a vazão mínima pela coluna (MWD, turbina, limpeza) e em FMCD é vazão min col + vazão anular.
+- Em cenários FMCD ou campos conhecidos, o teste de injetividade pode ser desconsiderado, passando direto à conversão para MCD.
+- Deve ser observado o valor da contrapressão no teste de injetividade, pois ela não deve ultrapassar 750 psi.
+- Bombear tampão de calcário Fino e Médio (40 ppb 1:1) e verificar efetividade (TESTE DE PLUGUEAMENTO) 4
+- Perda > Qcol 2
+- S
+- N
+- Perda > Qmin inj 5
+- Prosseguir perfuração em MPD
+- Converter sistema para FMCD e prosseguir perfuração bombeando SAC Qcol > Q min col
+- Qinj an > 200 gpm pelo anular
+- Converter sistema para PMCD:
+- Prosseguir bombeando SAC
+- Qcoluna > Q min col
+- Qinj > 200 gpm (LAM) a cada 6h
+- Limitando Pinjeção a 900 psi (sensor de SBP)
+- v
+- Qretorno =0 gpm
+- Pinj > 0 para
+- Qinj > Qmin inj
+- Pinj = 0 para
+- Qinj > Qmin inj
+- N
+- Há autonomia de fluido? 3
+- Há autonomia de fluido? 3
+- Há autonomia de fluido para expor mais formação para prosseguir?
+- N
+- S

@@ -65,8 +65,10 @@ SAIDA_XLSX = SCRIPT_DIR / "resultado_aprovacoes_mpd.xlsx"
 DIAG_HTML = SCRIPT_DIR / "diagnostico_detalhe.html"
 
 DEBUGGING_PORT = 9222
-WAIT_TIMEOUT = 25
-PAUSA = 1.5
+WAIT_TIMEOUT = 30
+WAIT_FAST = 10
+PAUSA_TABELA = 2
+PAUSA_PAGINA = 1
 
 POCOS_DEFAULT = [
     "1-APS-57", "1-RJS-763DA", "3-SPS-114", "3-SPS-114A", "4-RJS-764",
@@ -104,6 +106,71 @@ logging.basicConfig(
 log = logging.getLogger("seqop_scraper")
 
 
+# ── Funções auxiliares de wait ─────────────────────────────────────────────
+
+def wait_for_element(driver, by, selector, timeout=WAIT_TIMEOUT, condition="presence"):
+    """Espera por um elemento com verificação de condição específica."""
+    try:
+        if condition == "clickable":
+            element = WebDriverWait(driver, timeout, ignored_exceptions=[StaleElementReferenceException]).until(
+                EC.element_to_be_clickable((by, selector))
+            )
+        elif condition == "visible":
+            element = WebDriverWait(driver, timeout, ignored_exceptions=[StaleElementReferenceException]).until(
+                EC.visibility_of_element_located((by, selector))
+            )
+        else:  # presence
+            element = WebDriverWait(driver, timeout, ignored_exceptions=[StaleElementReferenceException]).until(
+                EC.presence_of_element_located((by, selector))
+            )
+        return element
+    except TimeoutException:
+        return None
+
+
+def wait_for_stable_table(driver, max_wait=5):
+    """Aguarda até que a tabela pare de mudar (dados carregados)."""
+    try:
+        start = time.time()
+        last_count = 0
+        stable_checks = 0
+        
+        while time.time() - start < max_wait:
+            try:
+                rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+                current_count = len(rows)
+                
+                if current_count > 0 and current_count == last_count:
+                    stable_checks += 1
+                    if stable_checks >= 2:  # Estável por 2 verificações
+                        return True
+                else:
+                    stable_checks = 0
+                    last_count = current_count
+                
+                time.sleep(0.5)
+            except StaleElementReferenceException:
+                stable_checks = 0
+                time.sleep(0.3)
+        
+        return last_count > 0
+    except Exception:
+        return False
+
+
+def wait_for_page_ready(driver, timeout=10):
+    """Aguarda até que a página esteja completamente carregada."""
+    try:
+        WebDriverWait(driver, timeout).until(
+            lambda d: d.execute_script("return document.readyState") == "complete"
+        )
+        # Aguarda adicional para frameworks SPA
+        time.sleep(0.5)
+        return True
+    except TimeoutException:
+        return False
+
+
 # ── Dataclasses ─────────────────────────────────────────────────────────────
 
 @dataclass
@@ -127,6 +194,7 @@ class AprovacaoMPD:
     aprovado_por: str
     aprovado_em: str
     fonte_url: str
+    comentario: str = ""
     carimbo_extracao_utc: str = field(
         default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     )
@@ -278,28 +346,40 @@ def _limpar_filtros(driver):
 def pesquisar_poco(driver, wait, poco):
     log.info(f"Pesquisando poço: {poco}")
     _limpar_filtros(driver)
-    time.sleep(0.5)
-    campo = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input#poco")))
+    time.sleep(0.3)
+    
+    # Aguardar campo ficar disponível
+    campo = wait_for_element(driver, By.CSS_SELECTOR, "input#poco", WAIT_FAST, "clickable")
+    if not campo:
+        campo = driver.find_element(By.CSS_SELECTOR, "input#poco")
+    
     campo.click()
     campo.send_keys(Keys.CONTROL, "a")
     campo.send_keys(Keys.DELETE)
-    time.sleep(0.3)
+    time.sleep(0.2)
     campo.send_keys(poco)
-    time.sleep(0.6)
-    try:
-        btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.btn.btn-success")))
-    except TimeoutException:
+    time.sleep(0.4)
+    
+    # Aguardar botão de pesquisa ficar clicável
+    btn = wait_for_element(driver, By.CSS_SELECTOR, "button.btn.btn-success", WAIT_FAST, "clickable")
+    if not btn:
         btn = driver.find_element(By.CSS_SELECTOR, "button.btn.btn-success")
         driver.execute_script(
             "arguments[0].removeAttribute('disabled');"
             "arguments[0].classList.remove('disabled');", btn)
-        time.sleep(0.3)
+        time.sleep(0.2)
+    
     driver.execute_script("arguments[0].click();", btn)
-    time.sleep(2)
+    
+    # Aguardar resultados com verificação de estabilidade
+    time.sleep(1)
+    wait_for_stable_table(driver, max_wait=6)
+    
+    # Verificação adicional de que há células na tabela
     try:
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr td")))
     except TimeoutException:
-        time.sleep(3)
+        time.sleep(1.5)
 
 
 # ── Paginação ──────────────────────────────────────────────────────────────
@@ -312,7 +392,9 @@ def avancar_pagina(driver):
             if "disabled" in (li.get_attribute("class") or ""):
                 return False
             driver.execute_script("arguments[0].click();", btns[0])
-            time.sleep(PAUSA + 1)
+            time.sleep(PAUSA_PAGINA)
+            # Aguardar tabela estabilizar após mudança de página
+            wait_for_stable_table(driver, max_wait=5)
             return True
         return False
     except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
@@ -382,12 +464,15 @@ def _extrair_url_sequencia(driver, link_element) -> str | None:
 
     nova_aba = (set(driver.window_handles) - handles_antes).pop()
     driver.switch_to.window(nova_aba)
-    time.sleep(1)  # só precisamos da URL, não do conteúdo completo
+    
+    # Aguardar URL ser carregada (rápido, só precisamos da URL)
+    time.sleep(0.5)
+    wait_for_page_ready(driver, timeout=3)
     url = driver.current_url
 
     driver.close()
     driver.switch_to.window(original)
-    time.sleep(0.3)
+    time.sleep(0.2)
 
     return url
 
@@ -521,31 +606,46 @@ def fase2_extrair_historico(driver, wait, seq: SequenciaMPD) -> list[AprovacaoMP
         pass
 
     driver.get(seq.url)
+    
+    # Aguardar página estar pronta
+    wait_for_page_ready(driver, timeout=8)
 
-    # Se o ID esperado é igual ao que já estava, forçar reload
+    # Se o ID esperado é igual ao que já estava, página já está certa
     if expected_id and expected_id == old_id:
-        # Mesmo ID, página já está certa — sem espera
         pass
     elif expected_id:
         # Aguardar até o atributo idsequencia mudar para o ID esperado
-        try:
-            WebDriverWait(driver, 15).until(
-                lambda d: d.find_element(
-                    By.CSS_SELECTOR, f'div[idsequencia="{expected_id}"]'
+        elemento_encontrado = False
+        for tentativa in range(2):
+            try:
+                WebDriverWait(driver, 12).until(
+                    lambda d: d.find_element(
+                        By.CSS_SELECTOR, f'div[idsequencia="{expected_id}"]'
+                    )
                 )
-            )
-        except TimeoutException:
-            # Fallback: forçar navegação via JS
-            driver.execute_script(f"window.location.hash = '#/view/{expected_id}';")
-            time.sleep(2)
+                elemento_encontrado = True
+                break
+            except TimeoutException:
+                if tentativa == 0:
+                    # Fallback: forçar navegação via JS
+                    log.info("    Forçando navegação via JS...")
+                    driver.execute_script(f"window.location.hash = '#/view/{expected_id}';")
+                    time.sleep(1.5)
+                    wait_for_page_ready(driver, timeout=8)
+                else:
+                    time.sleep(1)
+        
+        if not elemento_encontrado:
+            log.warning(f"    Timeout aguardando elemento com ID {expected_id}")
     else:
-        # Sem ID mongo, esperar genérico
-        try:
-            WebDriverWait(driver, 12).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "div.dadosVersao"))
-            )
-        except TimeoutException:
-            time.sleep(2)
+        # Sem ID mongo, esperar elementos genéricos da página de detalhe
+        dadosVersao = wait_for_element(driver, By.CSS_SELECTOR, "div.dadosVersao", 12, "presence")
+        if not dadosVersao:
+            # Tentar esperar por sidebar
+            wait_for_element(driver, By.CSS_SELECTOR, "div.SideBar", 8, "presence")
+    
+    # Aguardar adicional para conteúdo dinâmico carregar
+    time.sleep(0.8)
 
     # ── Diagnóstico: salvar HTML da 1ª página de detalhe ─────────────
     if not _diag_salvo:
@@ -572,7 +672,7 @@ def fase2_extrair_historico(driver, wait, seq: SequenciaMPD) -> list[AprovacaoMP
     historico_encontrado = _extrair_historico_mpd_sidebar(driver)
 
     if historico_encontrado:
-        mapa_nomes = _extrair_nomes_mpd_comentarios(driver)
+        mapa_nomes, mapa_comentarios = _extrair_nomes_mpd_comentarios(driver)
 
         for entry in historico_encontrado:
             versao = entry["versao"]
@@ -580,12 +680,14 @@ def fase2_extrair_historico(driver, wait, seq: SequenciaMPD) -> list[AprovacaoMP
             codigo = entry["codigo"]
             data = entry["data"]
             nome = mapa_nomes.get(codigo, codigo)
+            comentario = mapa_comentarios.get(versao, "")
 
             resultados.append(AprovacaoMPD(
                 poco=seq.poco, seq_id=seq.seq_id, titulo=titulo_pagina,
                 versao=versao,
                 aprovado_por=f"{nome} ({acao})" if acao.lower() != "aprovado" else nome,
                 aprovado_em=data, fonte_url=seq.url,
+                comentario=comentario,
             ))
 
         log.info(f"    → {len(resultados)} entradas MPD (sidebar)")
@@ -635,6 +737,9 @@ def _extrair_historico_mpd_sidebar(driver) -> list[dict]:
     entradas = []
 
     try:
+        # Aguardar elementos da sidebar estarem disponíveis
+        time.sleep(0.5)
+        
         # Usar JS para encontrar o texto do container de uma vez (mais rápido)
         texto_container = driver.execute_script("""
             var h6s = document.querySelectorAll('div.ma-3 h6, h6');
@@ -664,16 +769,24 @@ def _extrair_historico_mpd_sidebar(driver) -> list[dict]:
     return entradas
 
 
-def _extrair_nomes_mpd_comentarios(driver) -> dict:
-    """Mapeia códigos de usuário → nomes completos a partir dos comentários CSD-MPD.
+def _extrair_nomes_mpd_comentarios(driver) -> tuple[dict, dict]:
+    """Mapeia códigos de usuário → nomes completos e extrai textos dos comentários CSD-MPD.
 
     Procura em div.grupoComentario > div.emLinhaAutor.autor-versao:
       span[0] = "Nome Completo há X dias"
       span[1] = "CSD-MPD - Versão: N"
+
+    Retorna:
+        (mapa_nomes, mapa_comentarios)
+        mapa_nomes: {codigo_ou_versao: nome_completo}
+        mapa_comentarios: {versao: texto_completo_incluindo_respostas}
     """
     mapa = {}
+    mapa_comentarios = {}  # versão → texto do comentário + respostas
 
     try:
+        # Aguardar comentários carregarem
+        time.sleep(0.4)
         grupos = driver.find_elements(By.CSS_SELECTOR, "div.grupoComentario")
         for grupo in grupos:
             try:
@@ -694,16 +807,63 @@ def _extrair_nomes_mpd_comentarios(driver) -> dict:
                     r"\s+h[aá]\s+\d+\s+\w+$", "", nome_raw, flags=re.IGNORECASE
                 ).strip()
 
+                v_m = RE_COMENTARIO_CSD_MPD.search(info_grupo)
+                versao = v_m.group(1) if v_m else ""
+
+                # ── Extrair texto do comentário principal ────────────
+                texto_comentario = ""
+                try:
+                    card = grupo.find_element(By.CSS_SELECTOR, "div.card-text")
+                    texto_comentario = card.text.strip()
+                except Exception:
+                    pass
+
+                # ── Extrair respostas (replies) ─────────────────────
+                respostas = []
+                try:
+                    replies = grupo.find_elements(By.CSS_SELECTOR, "div.replyComments")
+                    for reply in replies:
+                        try:
+                            reply_card = reply.find_element(By.CSS_SELECTOR, "div.card-text")
+                            reply_text = reply_card.text.strip()
+                            # Capturar autor da resposta
+                            reply_autor = ""
+                            try:
+                                reply_autor_div = reply.find_element(
+                                    By.CSS_SELECTOR, "div.emLinhaAutor.autor-versao"
+                                )
+                                reply_spans = reply_autor_div.find_elements(By.TAG_NAME, "span")
+                                if reply_spans:
+                                    reply_autor = re.sub(
+                                        r"\s+h[aá]\s+\d+\s+\w+$", "",
+                                        reply_spans[0].text.strip(),
+                                        flags=re.IGNORECASE,
+                                    ).strip()
+                            except Exception:
+                                pass
+                            if reply_text:
+                                prefix = f"[Resposta de {reply_autor}] " if reply_autor else "[Resposta] "
+                                respostas.append(prefix + reply_text)
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+
+                # Montar texto completo
+                texto_completo = texto_comentario
+                if respostas:
+                    texto_completo += "\n" + "\n".join(respostas)
+
                 if nome:
-                    # Não temos o código diretamente, mas armazenamos
-                    # para tentativa de cross-reference
-                    v_m = RE_COMENTARIO_CSD_MPD.search(info_grupo)
-                    versao = v_m.group(1) if v_m else ""
                     # Guardar por versão (pode ajudar no cross-ref)
                     mapa[f"v{versao}"] = nome
                     mapa[nome] = nome  # identidade
-
                     log.info(f"    Comentário CSD-MPD: {nome} (Versão {versao})")
+
+                if versao:
+                    mapa_comentarios[versao] = texto_completo
+                    if texto_completo:
+                        log.info(f"    Texto comentário v{versao}: {texto_completo[:80]}...")
 
             except (NoSuchElementException, StaleElementReferenceException):
                 continue
@@ -711,7 +871,7 @@ def _extrair_nomes_mpd_comentarios(driver) -> dict:
     except Exception as e:
         log.warning(f"    Erro ao extrair nomes dos comentários: {e}")
 
-    return mapa
+    return mapa, mapa_comentarios
 
 
 def _extrair_aprovacoes_comentarios(driver, seq: SequenciaMPD) -> list[AprovacaoMPD]:
@@ -719,6 +879,8 @@ def _extrair_aprovacoes_comentarios(driver, seq: SequenciaMPD) -> list[Aprovacao
     resultados = []
 
     try:
+        # Aguardar comentários carregarem
+        time.sleep(0.4)
         grupos = driver.find_elements(By.CSS_SELECTOR, "div.grupoComentario")
         for grupo in grupos:
             try:
@@ -765,11 +927,47 @@ def _extrair_aprovacoes_comentarios(driver, seq: SequenciaMPD) -> list[Aprovacao
 
                 # Tentar pegar o texto do comentário para ver se aprovou
                 texto_comentario = ""
+                texto_comentario_original = ""
                 try:
                     card = grupo.find_element(By.CSS_SELECTOR, "div.card-text")
-                    texto_comentario = card.text.strip().lower()
+                    texto_comentario_original = card.text.strip()
+                    texto_comentario = texto_comentario_original.lower()
                 except Exception:
                     pass
+
+                # Extrair respostas (replies)
+                respostas = []
+                try:
+                    replies = grupo.find_elements(By.CSS_SELECTOR, "div.replyComments")
+                    for reply in replies:
+                        try:
+                            reply_card = reply.find_element(By.CSS_SELECTOR, "div.card-text")
+                            reply_text = reply_card.text.strip()
+                            reply_autor = ""
+                            try:
+                                reply_autor_div = reply.find_element(
+                                    By.CSS_SELECTOR, "div.emLinhaAutor.autor-versao"
+                                )
+                                reply_spans = reply_autor_div.find_elements(By.TAG_NAME, "span")
+                                if reply_spans:
+                                    reply_autor = re.sub(
+                                        r"\s+h[aá]\s+\d+\s+\w+$", "",
+                                        reply_spans[0].text.strip(),
+                                        flags=re.IGNORECASE,
+                                    ).strip()
+                            except Exception:
+                                pass
+                            if reply_text:
+                                prefix = f"[Resposta de {reply_autor}] " if reply_autor else "[Resposta] "
+                                respostas.append(prefix + reply_text)
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+
+                texto_completo = texto_comentario_original
+                if respostas:
+                    texto_completo += "\n" + "\n".join(respostas)
 
                 acao = "Comentou"
                 if any(w in texto_comentario for w in
@@ -784,6 +982,7 @@ def _extrair_aprovacoes_comentarios(driver, seq: SequenciaMPD) -> list[Aprovacao
                     aprovado_por=f"{nome} ({acao})" if acao != "Aprovado" else nome,
                     aprovado_em=data_aprox if data_aprox else "",
                     fonte_url=seq.url,
+                    comentario=texto_completo,
                 ))
 
             except (NoSuchElementException, StaleElementReferenceException):
@@ -811,7 +1010,7 @@ def salvar_excel(resultados: list[AprovacaoMPD]):
     colunas = [
         ("Poço", 22), ("Seq ID", 10), ("Título", 55), ("Versão", 10),
         ("Aprovado Por (MPD)", 40), ("Aprovado Em", 18),
-        ("URL Fonte", 55), ("Extração (UTC)", 22),
+        ("URL Fonte", 55), ("Comentário", 80), ("Extração (UTC)", 22),
     ]
 
     hdr_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
@@ -837,7 +1036,7 @@ def salvar_excel(resultados: list[AprovacaoMPD]):
                         break
                     except (ValueError, TypeError):
                         continue
-            if ci == 8 and isinstance(val, str) and val:  # coluna "Extração (UTC)"
+            if ci == 9 and isinstance(val, str) and val:  # coluna "Extração (UTC)"
                 try:
                     val = datetime.strptime(val, "%Y-%m-%d %H:%M:%S")
                 except (ValueError, TypeError):
@@ -847,7 +1046,9 @@ def salvar_excel(resultados: list[AprovacaoMPD]):
             c.alignment = Alignment(vertical="center")
             if ci == 6 and isinstance(val, datetime):
                 c.number_format = "DD/MM/YYYY"
-            elif ci == 8 and isinstance(val, datetime):
+            elif ci == 8:  # coluna "Comentário" — text wrap
+                c.alignment = Alignment(vertical="center", wrap_text=True)
+            elif ci == 9 and isinstance(val, datetime):
                 c.number_format = "YYYY-MM-DD HH:MM:SS"
 
     ws.auto_filter.ref = ws.dimensions
